@@ -10,8 +10,8 @@ BOT_TOKEN = "8817147859:AAHfiWhfASEfv0u2yo2d9gpR4SQToF5Xs3g"
 #    Для тестирования оставь пустым и включи SKIP_PAYMENT
 PROVIDER_TOKEN = ""
 
-# 3. Цена теста в копейках (29900 = 299 ₽)
-TEST_PRICE = 29900
+# 3. Цена теста в копейках (19900 = 199 ₽)
+TEST_PRICE = 19900
 
 # 4. Пропустить оплату (для тестирования — True, для продакшена — False)
 SKIP_PAYMENT = True
