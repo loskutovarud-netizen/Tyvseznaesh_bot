@@ -12,14 +12,16 @@ from aiogram.types import (
 from aiogram.client.default import DefaultBotProperties
 from aiohttp import web
 
+# Импорт конфигурации и данных
 from config import BOT_TOKEN, PROVIDER_TOKEN, SKIP_PAYMENT
 from questions import QUESTIONS
 from results import RESULTS
 
 logging.basicConfig(level=logging.INFO)
 
+# --- ВЕБ-СЕРВЕР ДЛЯ RENDER ---
 async def handle(request):
-    return web.Response(text="Бот живой!")
+    return web.Response(text="Бот запущен и работает!")
 
 async def start_web_server():
     app = web.Application()
@@ -36,17 +38,12 @@ class TestStates(StatesGroup):
 dp = Dispatcher()
 user_data = {}
 
+# --- КОМАНДА /start ---
 @dp.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     user_id = message.from_user.id
-    if SKIP_PAYMENT:
-        await start_test(message, state)
-        return
-        
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⚡️ Разобраться и получить план (199 ₽)", callback_data="buy_test")]
-    ])
     
+    # Текст стартового описания
     start_text = (
         "🧠 <b>Тест «Где мой тормоз?»</b>\n\n"
         "Ты прочитал кучу книг, посмотрел сотни роликов и идеально знаешь, <i>ЧТО</i> нужно делать. "
@@ -59,10 +56,28 @@ async def cmd_start(message: Message, state: FSMContext):
         "4️⃣ <b>Инструкция по разморозке:</b> Как начать действовать уже сегодня без насилия над собой.\n\n"
         "⏱ <b>Формат:</b> 18 глубоких вопросов (4 минуты)\n"
         "🚀 <b>Результат:</b> Сразу в чат в удобном формате\n\n"
-        "💰 <b>Стоимость доступа:</b> 199 ₽ <i>(вместо разовой консультации психолога за 5 000 ₽)</i>"
     )
     
+    # Кнопка зависит от режима оплаты в config.py
+    if SKIP_PAYMENT:
+        start_text += "🎁 <b>Тестовый режим:</b> Доступ бесплатный!"
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🚀 Начать тест", callback_data="start_free_test")]
+        ])
+    else:
+        start_text += "💰 <b>Стоимость доступа:</b> 199 ₽ <i>(вместо консультации психолога за 5 000 ₽)</i>"
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⚡️ Разобраться и получить план (199 ₽)", callback_data="buy_test")]
+        ])
+    
     await message.answer(start_text, reply_markup=kb)
+
+# --- ОБРАБОТКА КНОПОК СТАРТА И ОПЛАТЫ ---
+@dp.callback_query(F.data == "start_free_test")
+async def process_free_start(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.edit_reply_markup(reply_markup=None) # Убираем кнопку старта
+    await start_test(callback.message, state)
+    await callback.answer()
 
 @dp.callback_query(F.data == "buy_test")
 async def send_invoice(callback: types.CallbackQuery):
@@ -86,6 +101,7 @@ async def process_successful_payment(message: Message, state: FSMContext):
     await message.answer("✅ Оплата прошла успешно! Начинаем тест...")
     await start_test(message, state)
 
+# --- ЗАПУСК ТЕСТА ---
 async def start_test(message: Message, state: FSMContext):
     user_id = message.from_user.id
     user_data[user_id] = {
@@ -95,6 +111,7 @@ async def start_test(message: Message, state: FSMContext):
     await state.set_state(TestStates.in_progress)
     await send_question(message, 0)
 
+# --- ОТПРАВКА ВОПРОСА ---
 async def send_question(message: Message, q_index: int):
     q = QUESTIONS[q_index]
     total = len(QUESTIONS)
@@ -112,6 +129,7 @@ async def send_question(message: Message, q_index: int):
     kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
     await message.answer(text, reply_markup=kb)
 
+# --- ОБРАБОТКА ОТВЕТОВ ---
 @dp.callback_query(F.data.startswith("q_"))
 async def process_answer(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
@@ -123,32 +141,40 @@ async def process_answer(callback: types.CallbackQuery, state: FSMContext):
     q_index = int(data[1])
     a_index = int(data[2])
     
+    # Добавляем баллы
     scores_to_add = QUESTIONS[q_index]['answers'][a_index][2]
     for key, val in scores_to_add.items():
         user_data[user_id]["scores"][key] += val
     
+    # Просто отключим кнопки у отвеченного вопроса, НЕ УДАЛЯЯ сообщение
+    await callback.message.edit_reply_markup(reply_markup=None)
+    
     next_q = q_index + 1
     if next_q < len(QUESTIONS):
         user_data[user_id]["current_q"] = next_q
-        await callback.message.delete()
         await send_question(callback.message, next_q)
     else:
-        await callback.message.delete()
         await show_result(callback.message, user_id, state)
+        
     await callback.answer()
 
+# --- ВЫВОД РЕЗУЛЬТАТОВ ---
 async def show_result(message: Message, user_id: int, state: FSMContext):
     scores = user_data[user_id]["scores"]
     main_type = max(scores, key=scores.get)
     res = RESULTS[main_type]
+    
     await message.answer("📊 <b>Тест завершен! Твой персональный разбор:</b>")
     await message.answer(res['msg1'])
     await message.answer(res['msg2'])
     await message.answer(res['msg3'])
     await message.answer(res['msg4'])
+    
     await state.clear()
-    if user_id in user_data: del user_data[user_id]
+    if user_id in user_data:
+        del user_data[user_id]
 
+# --- ТОЧКА ВХОДА ---
 async def main():
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
     await start_web_server()
