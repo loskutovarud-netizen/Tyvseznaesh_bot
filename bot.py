@@ -41,9 +41,6 @@ user_data = {}
 # --- КОМАНДА /start ---
 @dp.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
-    user_id = message.from_user.id
-    
-    # Текст стартового описания
     start_text = (
         "🧠 <b>Тест «Где мой тормоз?»</b>\n\n"
         "Ты прочитал кучу книг, посмотрел сотни роликов и идеально знаешь, <i>ЧТО</i> нужно делать. "
@@ -58,7 +55,6 @@ async def cmd_start(message: Message, state: FSMContext):
         "🚀 <b>Результат:</b> Сразу в чат в удобном формате\n\n"
     )
     
-    # Кнопка зависит от режима оплаты в config.py
     if SKIP_PAYMENT:
         start_text += "🎁 <b>Тестовый режим:</b> Доступ бесплатный!"
         kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -72,13 +68,15 @@ async def cmd_start(message: Message, state: FSMContext):
     
     await message.answer(start_text, reply_markup=kb)
 
-# --- ОБРАБОТКА КНОПОК СТАРТА И ОПЛАТЫ ---
+# --- ОБРАБОТКА БЕСПЛАТНОГО СТАРТА ---
 @dp.callback_query(F.data == "start_free_test")
 async def process_free_start(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.edit_reply_markup(reply_markup=None) # Убираем кнопку старта
-    await start_test(callback.message, state)
+    await callback.message.edit_reply_markup(reply_markup=None)
+    # Передаем ТОЧНЫЙ ID пользователя
+    await start_test(callback.message, state, user_id=callback.from_user.id)
     await callback.answer()
 
+# --- ВЫСТАВЛЕНИЕ СЧЕТА ---
 @dp.callback_query(F.data == "buy_test")
 async def send_invoice(callback: types.CallbackQuery):
     await callback.bot.send_invoice(
@@ -96,14 +94,15 @@ async def send_invoice(callback: types.CallbackQuery):
 async def process_pre_checkout(pre_checkout_query: PreCheckoutQuery):
     await pre_checkout_query.answer(ok=True)
 
+# --- ПОСЛЕ ОПЛАТЫ ---
 @dp.message(F.successful_payment)
 async def process_successful_payment(message: Message, state: FSMContext):
     await message.answer("✅ Оплата прошла успешно! Начинаем тест...")
-    await start_test(message, state)
+    await start_test(message, state, user_id=message.from_user.id)
 
-# --- ЗАПУСК ТЕСТА ---
-async def start_test(message: Message, state: FSMContext):
-    user_id = message.from_user.id
+# --- ИНИЦИАЛИЗАЦИЯ ТЕСТА ---
+async def start_test(message: Message, state: FSMContext, user_id: int):
+    # Теперь user_id передается гарантированно правильно
     user_data[user_id] = {
         "scores": {"collector": 0, "analyst": 0, "frozen": 0, "perfectionist": 0, "loner": 0},
         "current_q": 0
@@ -133,20 +132,21 @@ async def send_question(message: Message, q_index: int):
 @dp.callback_query(F.data.startswith("q_"))
 async def process_answer(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
+    
     if user_id not in user_data:
-        await callback.answer("Начни заново через /start")
+        await callback.answer("Сессия истекла. Начни заново через /start", show_alert=True)
         return
 
     data = callback.data.split("_")
     q_index = int(data[1])
     a_index = int(data[2])
     
-    # Добавляем баллы
+    # Считываем баллы
     scores_to_add = QUESTIONS[q_index]['answers'][a_index][2]
     for key, val in scores_to_add.items():
         user_data[user_id]["scores"][key] += val
     
-    # Просто отключим кнопки у отвеченного вопроса, НЕ УДАЛЯЯ сообщение
+    # Убираем кнопки у предыдущего вопроса
     await callback.message.edit_reply_markup(reply_markup=None)
     
     next_q = q_index + 1
@@ -174,7 +174,7 @@ async def show_result(message: Message, user_id: int, state: FSMContext):
     if user_id in user_data:
         del user_data[user_id]
 
-# --- ТОЧКА ВХОДА ---
+# --- ЗАПУСК ---
 async def main():
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
     await start_web_server()
