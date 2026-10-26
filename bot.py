@@ -105,14 +105,29 @@ async def send_question(message: Message, q_index: int):
     q = QUESTIONS[q_index]
     total = len(QUESTIONS)
     
-    text = f"<b>{q['category']} ({q_index + 1}/{total})</b>\n\n{q['text']}"
+    # 1. Формируем текст вопроса
+    question_text = f"<b>{q['category']} ({q_index + 1}/{total})</b>\n\n"
+    question_text += f"<u>{q['text']}</u>\n\n"
     
+    # 2. Добавляем варианты ответов прямо в текст сообщения
+    letters = ["A", "B", "C", "D"]
     buttons = []
-    for i, (emoji, ans_text, _) in enumerate(q['answers']):
-        buttons.append([InlineKeyboardButton(text=f"{emoji} {ans_text}", callback_data=f"q_{q_index}_{i}")])
     
-    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-    await message.answer(text, reply_markup=kb)
+    for i, (emoji, ans_text, _) in enumerate(q['answers']):
+        # Добавляем строку вида: A. 🔍 Открываю Google...
+        question_text += f"<b>{letters[i]}.</b> {emoji} {ans_text}\n\n"
+        
+        # Создаем кнопку только с буквой
+        buttons.append(InlineKeyboardButton(
+            text=f"Вариант {letters[i]}", 
+            callback_data=f"q_{q_index}_{i}"
+        ))
+    
+    # 3. Группируем кнопки по 2 в ряд (так красивее)
+    kb_rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
+    
+    await message.answer(question_text, reply_markup=kb)
 
 # --- ОБРАБОТКА НАЖАТИЯ НА КНОПКИ ТЕСТА ---
 @dp.callback_query(F.data.startswith("q_"))
