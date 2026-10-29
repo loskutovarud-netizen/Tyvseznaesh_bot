@@ -14,7 +14,7 @@ PROVIDER_TOKEN = ""
 TEST_PRICE = 19900
 
 # 4. Пропустить оплату (для тестирования — True, для продакшена — False)
-SKIP_PAYMENT = True
+SKIP_PAYMENT = False
 
 # 5. ID администратора (твой Telegram ID, получить у @userinfobot)
 ADMIN_ID = 123456789
