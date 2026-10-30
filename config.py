@@ -8,7 +8,7 @@ BOT_TOKEN = "8817147859:AAHfiWhfASEfv0u2yo2d9gpR4SQToF5Xs3g"
 # 2. Токен платёжного провайдера (ЮKassa)
 #    Получить: ЮKassa → Настройки → API и платёжные формы → Telegram Payments
 #    Для тестирования оставь пустым и включи SKIP_PAYMENT
-PROVIDER_TOKEN = ""
+PROVIDER_TOKEN = "390540012:LIVE:104717"
 
 # 3. Цена теста в копейках (19900 = 199 ₽)
 TEST_PRICE = 19900
