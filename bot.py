@@ -1,183 +1,163 @@
 import asyncio
 import logging
 import os
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import CommandStart
+from aiogram import Bot, Dispatcher, F, types
+from aiogram.client.default import DefaultBotProperties
+from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import (
-    InlineKeyboardMarkup, InlineKeyboardButton, Message, 
-    LabeledPrice, PreCheckoutQuery
-)
-from aiogram.client.default import DefaultBotProperties
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, PreCheckoutQuery
 from aiohttp import web
 
-# Импорт конфигурации и данных
-from config import BOT_TOKEN, PROVIDER_TOKEN, SKIP_PAYMENT
+import config
 from questions import QUESTIONS
-from results import RESULTS
+from results import get_result_text
 
 logging.basicConfig(level=logging.INFO)
 
-# --- ВЕБ-СЕРВЕР ДЛЯ RENDER ---
-async def handle(request):
-    return web.Response(text="Бот запущен и работает!")
+bot = Bot(token=config.BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
+dp = Dispatcher(storage=MemoryStorage())
+
+class TestStates(StatesGroup):
+    answering = State()
+    waiting_payment = State()
+
+# --- ВЕБ-СЕРВЕР ДЛЯ RENDER (Health Check) ---
+async def handle_health_check(request):
+    return web.Response(text="Bot is alive!", status=200)
 
 async def start_web_server():
     app = web.Application()
-    app.router.add_get("/", handle)
+    app.router.add_get("/", handle_health_check)
     runner = web.AppRunner(app)
     await runner.setup()
     port = int(os.environ.get("PORT", 10000))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
+    logging.info(f"Web server active on port {port}")
 
-class TestStates(StatesGroup):
-    in_progress = State()
+# --- ФУНКЦИИ БОТА ---
+async def send_question(message_or_callback, state: FSMContext):
+    data = await state.get_data()
+    q_index = data.get("q_index", 0)
 
-dp = Dispatcher()
-user_data = {}
+    if q_index >= len(QUESTIONS):
+        # Подсчет результатов
+        scores = data.get("scores", {})
+        dominant_type = max(scores, key=scores.get) if scores else "frozen"
+        await state.update_data(dominant_type=dominant_type)
 
-# --- КОМАНДА /start ---
-@dp.message(CommandStart())
-async def cmd_start(message: Message, state: FSMContext):
-    start_text = (
-        "🧠 <b>Тест «Где мой тормоз?»</b>\n\n"
-        "Ты прочитал кучу книг, посмотрел сотни роликов и идеально знаешь, <i>ЧТО</i> нужно делать. "
-        "Но почему-то продолжаешь откладывать жизнь на потом. Знакомо?\n\n"
-        "Дело не в лени и не в слабой воле. Твой мозг просто попал в один из 5 подсознательных <b>«паттернов застревания»</b>.\n\n"
-        "🎯 <b>Что ты получишь по итогам теста:</b>\n"
-        "1️⃣ <b>Точный диагноз:</b> Узнаешь свой главный тип тормоза (Коллекционер, Аналитик, Замороженный, Перфекционист или Одиночка).\n"
-        "2️⃣ <b>Разбор механики:</b> Поймёшь, КАК именно твой мозг обманывает тебя и создаёт иллюзию движения.\n"
-        "3️⃣ <b>Персональный план:</b> Получишь 5 конкретных микро-шагов, которые сработают именно для твоего психотипа.\n"
-        "4️⃣ <b>Инструкция по разморозке:</b> Как начать действовать уже сегодня без насилия над собой.\n\n"
-        "⏱ <b>Формат:</b> 18 глубоких вопросов (4 минуты)\n"
-        "🚀 <b>Результат:</b> Сразу в чат в удобном формате\n\n"
-    )
+        if config.SKIP_PAYMENT:
+            report = get_result_text(dominant_type)
+            if isinstance(message_or_callback, types.CallbackQuery):
+                await message_or_callback.message.answer(report)
+            else:
+                await message_or_callback.answer(report)
+            await state.clear()
+        else:
+            await state.set_state(TestStates.waiting_payment)
+            prices = [LabeledPrice(label="Персональный разбор тормоза", amount=config.TEST_PRICE)]
+            
+            target_msg = message_or_callback.message if isinstance(message_or_callback, types.CallbackQuery) else message_or_callback
+            await target_msg.answer_invoice(
+                title="🧠 Твой разбор и 5-шаговый план",
+                description="Полная расшифровка типа торможения и стратегия выхода из застоя.",
+                provider_token=config.PROVIDER_TOKEN,
+                currency="RUB",
+                prices=prices,
+                start_parameter="brake-diagnostic",
+                payload=f"payload_brake_{target_msg.from_user.id}"
+            )
+        return
+
+    q = QUESTIONS[q_index]
     
-    if SKIP_PAYMENT:
-        start_text += "🎁 <b>Тестовый режим:</b> Доступ бесплатный!"
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🚀 Начать тест", callback_data="start_free_test")]
-        ])
+    # Формируем текст сообщения (Вопрос + Варианты A, B, C, D)
+    text_lines = [f"<b>{q['text']}</b>\n"]
+    keyboard_buttons = []
+    
+    for opt in q["options"]:
+        text_lines.append(f"<b>Вариант {opt['label']}:</b> {opt['text']}")
+        keyboard_buttons.append(
+            InlineKeyboardButton(text=f"Вариант {opt['label']}", callback_data=f"ans_{opt['label']}")
+        )
+
+    # Группируем кнопки по 2 в ряд
+    rows = [keyboard_buttons[i:i + 2] for i in range(0, len(keyboard_buttons), 2)]
+    reply_markup = InlineKeyboardMarkup(inline_keyboard=rows)
+
+    full_text = "\n\n".join(text_lines)
+
+    if isinstance(message_or_callback, types.CallbackQuery):
+        await message_or_callback.message.answer(full_text, reply_markup=reply_markup)
     else:
-        start_text += "💰 <b>Стоимость доступа:</b> 199 ₽ <i>(вместо консультации психолога за 5 000 ₽)</i>"
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⚡️ Разобраться и получить план (199 ₽)", callback_data="buy_test")]
-        ])
-    
-    await message.answer(start_text, reply_markup=kb)
+        await message_or_callback.answer(full_text, reply_markup=reply_markup)
 
-# --- ОБРАБОТКА БЕСПЛАТНОГО СТАРТА ---
-@dp.callback_query(F.data == "start_free_test")
-async def process_free_start(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.edit_reply_markup(reply_markup=None)
-    # Передаем ТОЧНЫЙ ID пользователя
-    await start_test(callback.message, state, user_id=callback.from_user.id)
-    await callback.answer()
-
-# --- ВЫСТАВЛЕНИЕ СЧЕТА ---
-@dp.callback_query(F.data == "buy_test")
-async def send_invoice(callback: types.CallbackQuery):
-    await callback.bot.send_invoice(
-        chat_id=callback.from_user.id,
-        title="Тест «Где мой тормоз?»",
-        description="Разбор паттерна застревания + персональный план из 5 шагов.",
-        payload="test_access",
-        provider_token=PROVIDER_TOKEN,
-        currency="RUB",
-        prices=[LabeledPrice(label="Доступ к тесту", amount=19900)]
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message, state: FSMContext):
+    await state.clear()
+    sales_text = (
+        "🧠 <b>ПОЧЕМУ ТЫ ТОПЧЕШЬСЯ НА МЕСТЕ И КАК ЭТО ИСПРАВИТЬ?</b>\n\n"
+        "Ты прочитал десятки книг, прошел кучу курсов, но доход и жизнь не меняются? "
+        "Дело вообще не в лени или отсутствии знаний.\n\n"
+        "Существует <b>8 психологических типов торможения</b>: Перфекционист, Спасатель, Мечтатель, Контролёр, Самозванец, Выгоревший, Хаотик и Замороженный.\n\n"
+        "🎯 <b>Пройди диагностику из 16 вопросов за 3 минуты и узнай:</b>\n"
+        "• Твой главный психологический блок\n"
+        "• Реальную причину, почему мозг тебя блокирует\n"
+        "• Пошаговый план из 5 действий, как сорваться с места\n\n"
+        "💳 <b>Стоимость полного разбора: 199 руб.</b> (вместо 5 000 руб. за сессию у психолога)\n\n"
+        "Нажми кнопку ниже, чтобы начать тест!"
     )
-    await callback.answer()
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🚀 Начать диагностику", callback_data="start_test")]
+    ])
+    await message.answer(sales_text, reply_markup=kb)
+
+@dp.callback_query(F.data == "start_test")
+async def start_test_handler(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await state.set_state(TestStates.answering)
+    await state.update_data(q_index=0, scores={})
+    await send_question(callback, state)
+
+@dp.callback_query(TestStates.answering, F.data.startswith("ans_"))
+async def handle_answer(callback: types.CallbackQuery, state: FSMContext):
+    ans_label = callback.data.split("_")[1]
+    
+    # Снимаем кнопки с отвеченного сообщения (чтобы не кликали повторно)
+    await callback.message.edit_reply_markup(reply_markup=None)
+
+    data = await state.get_data()
+    q_index = data.get("q_index", 0)
+    scores = data.get("scores", {})
+
+    q = QUESTIONS[q_index]
+    chosen_opt = next((o for o in q["options"] if o["label"] == ans_label), None)
+
+    if chosen_opt:
+        t_key = chosen_opt["type"]
+        scores[t_key] = scores.get(t_key, 0) + 1
+
+    await state.update_data(q_index=q_index + 1, scores=scores)
+    await send_question(callback, state)
 
 @dp.pre_checkout_query()
 async def process_pre_checkout(pre_checkout_query: PreCheckoutQuery):
-    await pre_checkout_query.answer(ok=True)
+    await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
 
-# --- ПОСЛЕ ОПЛАТЫ ---
 @dp.message(F.successful_payment)
-async def process_successful_payment(message: Message, state: FSMContext):
-    await message.answer("✅ Оплата прошла успешно! Начинаем тест...")
-    await start_test(message, state, user_id=message.from_user.id)
-
-# --- ИНИЦИАЛИЗАЦИЯ ТЕСТА ---
-async def start_test(message: Message, state: FSMContext, user_id: int):
-    # Теперь user_id передается гарантированно правильно
-    user_data[user_id] = {
-        "scores": {"collector": 0, "analyst": 0, "frozen": 0, "perfectionist": 0, "loner": 0},
-        "current_q": 0
-    }
-    await state.set_state(TestStates.in_progress)
-    await send_question(message, 0)
-
-# --- ОТПРАВКА ВОПРОСА ---
-async def send_question(message: Message, q_index: int):
-    q = QUESTIONS[q_index]
-    total = len(QUESTIONS)
-    letters = ["A", "B", "C", "D"]
+async def process_successful_payment(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    dominant_type = data.get("dominant_type", "frozen")
+    report = get_result_text(dominant_type)
     
-    text = f"📍 <b>{q['category']} ({q_index + 1}/{total})</b>\n\n"
-    text += f"<b>{q['text']}</b>\n\n"
-    
-    buttons = []
-    for i, (emoji, ans_text, _) in enumerate(q['answers']):
-        text += f"<b>{letters[i]}.</b> {emoji} {ans_text}\n\n"
-        buttons.append(InlineKeyboardButton(text=f"Вариант {letters[i]}", callback_data=f"q_{q_index}_{i}"))
-    
-    kb_rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
-    kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
-    await message.answer(text, reply_markup=kb)
-
-# --- ОБРАБОТКА ОТВЕТОВ ---
-@dp.callback_query(F.data.startswith("q_"))
-async def process_answer(callback: types.CallbackQuery, state: FSMContext):
-    user_id = callback.from_user.id
-    
-    if user_id not in user_data:
-        await callback.answer("Сессия истекла. Начни заново через /start", show_alert=True)
-        return
-
-    data = callback.data.split("_")
-    q_index = int(data[1])
-    a_index = int(data[2])
-    
-    # Считываем баллы
-    scores_to_add = QUESTIONS[q_index]['answers'][a_index][2]
-    for key, val in scores_to_add.items():
-        user_data[user_id]["scores"][key] += val
-    
-    # Убираем кнопки у предыдущего вопроса
-    await callback.message.edit_reply_markup(reply_markup=None)
-    
-    next_q = q_index + 1
-    if next_q < len(QUESTIONS):
-        user_data[user_id]["current_q"] = next_q
-        await send_question(callback.message, next_q)
-    else:
-        await show_result(callback.message, user_id, state)
-        
-    await callback.answer()
-
-# --- ВЫВОД РЕЗУЛЬТАТОВ ---
-async def show_result(message: Message, user_id: int, state: FSMContext):
-    scores = user_data[user_id]["scores"]
-    main_type = max(scores, key=scores.get)
-    res = RESULTS[main_type]
-    
-    await message.answer("📊 <b>Тест завершен! Твой персональный разбор:</b>")
-    await message.answer(res['msg1'])
-    await message.answer(res['msg2'])
-    await message.answer(res['msg3'])
-    await message.answer(res['msg4'])
-    
+    await message.answer("✅ <b>Оплата успешно принята!</b> Формируем ваш разбор...")
+    await message.answer(report)
     await state.clear()
-    if user_id in user_data:
-        del user_data[user_id]
 
-# --- ЗАПУСК ---
 async def main():
-    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
-    await start_web_server()
+    asyncio.create_task(start_web_server())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
