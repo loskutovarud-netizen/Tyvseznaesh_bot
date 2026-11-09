@@ -43,7 +43,7 @@ async def send_question(message_or_callback, state: FSMContext):
     q_index = data.get("q_index", 0)
 
     if q_index >= len(QUESTIONS):
-        # Подсчет результатов
+        # Подсчет доминирующего типа
         scores = data.get("scores", {})
         dominant_type = max(scores, key=scores.get) if scores else "frozen"
         await state.update_data(dominant_type=dominant_type)
@@ -61,8 +61,8 @@ async def send_question(message_or_callback, state: FSMContext):
             
             target_msg = message_or_callback.message if isinstance(message_or_callback, types.CallbackQuery) else message_or_callback
             await target_msg.answer_invoice(
-                title="🧠 Твой разбор и 5-шаговый план",
-                description="Полная расшифровка типа торможения и стратегия выхода из застоя.",
+                title="🧠 Твой разбор и план действий",
+                description="Полный диагноз твоего доминирующего блока и 5 шагов для старта.",
                 provider_token=config.PROVIDER_TOKEN,
                 currency="RUB",
                 prices=prices,
@@ -73,7 +73,7 @@ async def send_question(message_or_callback, state: FSMContext):
 
     q = QUESTIONS[q_index]
     
-    # Формируем текст сообщения (Вопрос + Варианты A, B, C, D)
+    # Текст вопроса + варианты ответов
     text_lines = [f"<b>{q['text']}</b>\n"]
     keyboard_buttons = []
     
@@ -83,7 +83,6 @@ async def send_question(message_or_callback, state: FSMContext):
             InlineKeyboardButton(text=f"Вариант {opt['label']}", callback_data=f"ans_{opt['label']}")
         )
 
-    # Группируем кнопки по 2 в ряд
     rows = [keyboard_buttons[i:i + 2] for i in range(0, len(keyboard_buttons), 2)]
     reply_markup = InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -98,19 +97,18 @@ async def send_question(message_or_callback, state: FSMContext):
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
     sales_text = (
-        "🧠 <b>ПОЧЕМУ ТЫ ТОПЧЕШЬСЯ НА МЕСТЕ И КАК ЭТО ИСПРАВИТЬ?</b>\n\n"
-        "Ты прочитал десятки книг, прошел кучу курсов, но доход и жизнь не меняются? "
-        "Дело вообще не в лени или отсутствии знаний.\n\n"
-        "Существует <b>8 психологических типов торможения</b>: Перфекционист, Спасатель, Мечтатель, Контролёр, Самозванец, Выгоревший, Хаотик и Замороженный.\n\n"
-        "🎯 <b>Пройди диагностику из 16 вопросов за 3 минуты и узнай:</b>\n"
-        "• Твой главный психологический блок\n"
-        "• Реальную причину, почему мозг тебя блокирует\n"
-        "• Пошаговый план из 5 действий, как сорваться с места\n\n"
-        "💳 <b>Стоимость полного разбора: 199 руб.</b> (вместо 5 000 руб. за сессию у психолога)\n\n"
-        "Нажми кнопку ниже, чтобы начать тест!"
+        "🧠 <b>УЗНАЙ СВОЙ ДОМИНИРУЮЩИЙ ТИП ТОРМОЖЕНИЯ</b>\n\n"
+        "Почему ты знаешь, ЧТО делать, но всё равно откладываешь и топчешься на месте? "
+        "Дело не в лени — твой мозг блокирует тебя по одному из 8 сценариев.\n\n"
+        "🎯 <b>Пройди тест из 20 вопросов (4 минуты) и получи:</b>\n"
+        "• Точный диагноз твоего доминирующего типа\n"
+        "• Реальную скрытую причину застоя\n"
+        "• 5 шагов выхода + 1 конкретное действие ПРЯМО СЕЙЧАС\n\n"
+        "💳 <b>Стоимость полного разбора: 199 руб.</b>\n\n"
+        "Нажми кнопку ниже, чтобы начать!"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🚀 Начать диагностику", callback_data="start_test")]
+        [InlineKeyboardButton(text="🚀 Начать тест (20 вопросов)", callback_data="start_test")]
     ])
     await message.answer(sales_text, reply_markup=kb)
 
@@ -125,7 +123,7 @@ async def start_test_handler(callback: types.CallbackQuery, state: FSMContext):
 async def handle_answer(callback: types.CallbackQuery, state: FSMContext):
     ans_label = callback.data.split("_")[1]
     
-    # Снимаем кнопки с отвеченного сообщения (чтобы не кликали повторно)
+    # Удаляем клавиатуру у отвеченного сообщения
     await callback.message.edit_reply_markup(reply_markup=None)
 
     data = await state.get_data()
@@ -152,7 +150,7 @@ async def process_successful_payment(message: types.Message, state: FSMContext):
     dominant_type = data.get("dominant_type", "frozen")
     report = get_result_text(dominant_type)
     
-    await message.answer("✅ <b>Оплата успешно принята!</b> Формируем ваш разбор...")
+    await message.answer("✅ <b>Оплата принята!</b> Формируем ваш персональный разбор...")
     await message.answer(report)
     await state.clear()
 
